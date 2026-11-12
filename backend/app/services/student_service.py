@@ -1,12 +1,7 @@
 from fastapi import HTTPException
 from app.utils.database import connect_db
-from datetime import date
-from app.schemas.aluno import AlunoBase, AlunoCreate, AlunoResponse, AlunoUpdate
+from app.schemas.aluno import AlunoCreate, AlunoUpdate
 
-"""
-Função de criação do aluno
-@JvReis
-"""
 def create_aluno(aluno: AlunoCreate):
     conn = connect_db()
     if not conn:
@@ -14,13 +9,14 @@ def create_aluno(aluno: AlunoCreate):
 
     try:
         cur = conn.cursor()
-        # Verificar se o usuário existe e se é um responsável (parent)
-        cur.execute("SELECT tipo_usuario FROM usuario WHERE id = %s;", (aluno.usuario_id,))
-        tipo_usuario = cur.fetchone()
+        # Verificar se usuário existe
+        cur.execute("SELECT id, tipo_usuario FROM usuario WHERE id = %s;", (aluno.usuario_id,))
+        user_res = cur.fetchone()
 
-        if not tipo_usuario or tipo_usuario[0] != 'parent':
-            cur.close()
-            raise HTTPException(status_code=400, detail="O usuário não é um responsável")
+        if not user_res:
+            raise HTTPException(status_code=400, detail="Usuário informado não existe")
+
+        responsavel_id = aluno.usuario_id if user_res[1] == 'parent' else None
 
         # Inserir aluno na tabela aluno
         query = """
@@ -35,32 +31,141 @@ def create_aluno(aluno: AlunoCreate):
             aluno.matricula,
             aluno.data_nascimento,
             aluno.serie_atual,
-            aluno.usuario_id,
-            aluno.termo_medicamento_escola,
-            aluno.termo_atendimento_medico,
-            aluno.termo_compartilhamento_dados,
+            responsavel_id,
+            aluno.termo_medicamento_escola if aluno.termo_medicamento_escola is not None else 1,
+            aluno.termo_atendimento_medico if aluno.termo_atendimento_medico is not None else 1,
+            aluno.termo_compartilhamento_dados if aluno.termo_compartilhamento_dados is not None else 1,
         )
 
-        # Executando o comando no banco de dados
         cur.execute(query, values)
+        row = cur.fetchone()
+        aluno_id = row[0] if row else None
 
-        aluno_id = cur.fetchone()[0]
+        # Se houver serie_atual, adiciona também na relação aluno_turma
+        if aluno.serie_atual and aluno_id:
+            try:
+                cur.execute("INSERT INTO aluno_turma (aluno_id, turma_id) VALUES (%s, %s);", (aluno_id, aluno.serie_atual))
+            except Exception:
+                pass
 
         conn.commit()
         return {"message": "Aluno adicionado com sucesso!", "aluno_id": aluno_id}
 
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
-        conn.close()
         raise HTTPException(status_code=500, detail=f"Erro ao adicionar aluno: {e}")
     finally:
         cur.close()
         conn.close()
 
-"""
-Função para pegar/listar os dados do estudanto de acordo com o id
-@JvReis
-"""
+def get_all_alunos():
+    conn = connect_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Erro ao conectar ao banco")
+
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT a.id, a.nome, a.endereco, a.matricula, a.data_nascimento, 
+                   a.serie_atual, a.responsavel_id, a.termo_medicamento_escola, 
+                   a.termo_atendimento_medico, a.termo_compartilhamento_dados,
+                   s.altura, s.peso, s.imc, s.alergias, s.doencas_cronicas,
+                   s.medicamentos_continuos, s.deficiencias_necessidades, s.plano_saude,
+                   t.codigo, t.serie
+            FROM aluno a
+            LEFT JOIN saude s ON a.id = s.aluno_id
+            LEFT JOIN turma t ON a.serie_atual = t.id
+            ORDER BY a.nome ASC;
+        """)
+        alunos = []
+        for row in cur.fetchall():
+            alunos.append({
+                "id": row[0],
+                "nome": row[1],
+                "nomeAluno": row[1],
+                "endereco": row[2],
+                "matricula": row[3],
+                "dataNascimento": str(row[4]),
+                "serie_atual": row[5],
+                "responsavel_id": row[6],
+                "termo_medicamento_escola": row[7],
+                "termo_atendimento_medico": row[8],
+                "termo_compartilhamento_dados": row[9],
+                "altura": row[10],
+                "peso": row[11],
+                "imc": row[12],
+                "alergias": row[13] or "Nenhuma",
+                "doencasCronicas": row[14] or "Nenhuma",
+                "medicamentos": row[15] or "Nenhum",
+                "necessidadesEspeciais": row[16] or "Nenhuma",
+                "planoSaude": row[17] or "Não possui",
+                "turmaCodigo": row[18],
+                "serieTurma": f"{row[18]} - {row[19]}" if row[18] else "Não definida",
+                "escola": "Escola Municipal Saúde e Saber"
+            })
+        return alunos
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar lista de alunos: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+def get_alunos_by_responsavel(responsavel_id: int):
+    conn = connect_db()
+    if not conn:
+        raise HTTPException(status_code=500, detail="Erro ao conectar ao banco")
+
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT a.id, a.nome, a.endereco, a.matricula, a.data_nascimento, 
+                   a.serie_atual, a.responsavel_id, a.termo_medicamento_escola, 
+                   a.termo_atendimento_medico, a.termo_compartilhamento_dados,
+                   s.altura, s.peso, s.imc, s.alergias, s.doencas_cronicas,
+                   s.medicamentos_continuos, s.deficiencias_necessidades, s.plano_saude,
+                   t.codigo, t.serie
+            FROM aluno a
+            LEFT JOIN saude s ON a.id = s.aluno_id
+            LEFT JOIN turma t ON a.serie_atual = t.id
+            WHERE a.responsavel_id = %s
+            ORDER BY a.nome ASC;
+        """, (responsavel_id,))
+        alunos = []
+        for row in cur.fetchall():
+            alunos.append({
+                "id": row[0],
+                "nome": row[1],
+                "nomeAluno": row[1],
+                "endereco": row[2],
+                "matricula": row[3],
+                "dataNascimento": str(row[4]),
+                "serie_atual": row[5],
+                "responsavel_id": row[6],
+                "termo_medicamento_escola": row[7],
+                "termo_atendimento_medico": row[8],
+                "termo_compartilhamento_dados": row[9],
+                "altura": row[10],
+                "peso": row[11],
+                "imc": row[12],
+                "alergias": row[13] or "Nenhuma",
+                "doencasCronicas": row[14] or "Nenhuma",
+                "medicamentos": row[15] or "Nenhum",
+                "necessidadesEspeciais": row[16] or "Nenhuma",
+                "planoSaude": row[17] or "Não possui",
+                "turmaCodigo": row[18],
+                "serieTurma": f"{row[18]} - {row[19]}" if row[18] else "Não definida",
+                "escola": "Escola Municipal Saúde e Saber"
+            })
+        return alunos
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar alunos do responsável: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
 def get_aluno_id(aluno_id: int):
     conn = connect_db()
     if not conn:
@@ -69,39 +174,58 @@ def get_aluno_id(aluno_id: int):
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT id, nome, endereco, matricula, data_nascimento, serie_atual, 
-                   responsavel_id, termo_medicamento_escola, termo_atendimento_medico, termo_compartilhamento_dados
-            FROM aluno 
-            WHERE id = %s;
+            SELECT a.id, a.nome, a.endereco, a.matricula, a.data_nascimento, a.serie_atual, 
+                   a.responsavel_id, a.termo_medicamento_escola, a.termo_atendimento_medico, a.termo_compartilhamento_dados,
+                   s.altura, s.peso, s.imc, s.alergias, s.doencas_cronicas,
+                   s.medicamentos_continuos, s.cirugiais_internacoes, s.vacinas,
+                   s.deficiencias_necessidades, s.plano_saude, s.atividade_fisica,
+                   t.codigo, t.serie
+            FROM aluno a
+            LEFT JOIN saude s ON a.id = s.aluno_id
+            LEFT JOIN turma t ON a.serie_atual = t.id
+            WHERE a.id = %s;
         """, (aluno_id,))
-        aluno = cur.fetchone()
+        row = cur.fetchone()
 
-        if aluno:
+        if row:
             return {
-                "id": aluno[0],
-                "nome": aluno[1],
-                "endereco": aluno[2],
-                "matricula": aluno[3],
-                "data_nascimento": aluno[4],
-                "serie_atual": aluno[5],
-                "responsavel_id": aluno[6],
-                "termo_medicamento_escola": aluno[7],
-                "termo_atendimento_medico": aluno[8],
-                "termo_compartilhamento_dados": aluno[9]
+                "id": row[0],
+                "nome": row[1],
+                "nomeAluno": row[1],
+                "endereco": row[2],
+                "matricula": row[3],
+                "data_nascimento": str(row[4]),
+                "dataNascimento": str(row[4]),
+                "serie_atual": row[5],
+                "responsavel_id": row[6],
+                "termo_medicamento_escola": row[7],
+                "termo_atendimento_medico": row[8],
+                "termo_compartilhamento_dados": row[9],
+                "altura": row[10],
+                "peso": row[11],
+                "imc": row[12],
+                "alergias": row[13],
+                "doencasCronicas": row[14],
+                "medicamentos": row[15],
+                "cirurgias": row[16],
+                "vacinas": row[17],
+                "necessidadesEspeciais": row[18],
+                "planoSaude": row[19],
+                "atividade_fisica": row[20],
+                "turmaCodigo": row[21],
+                "serieTurma": f"{row[21]} - {row[22]}" if row[21] else "Não definida",
+                "escola": "Escola Municipal Saúde e Saber"
             }
-        else:
-            raise HTTPException(status_code=404, detail="Aluno não encontrado")
+        raise HTTPException(status_code=404, detail="Aluno não encontrado")
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao buscar aluno: {e}")
     finally:
         cur.close()
         conn.close()
 
-"""
-Função para atualização do registro do aluno
-@JvReis
-"""
 def update_aluno_id(aluno: AlunoUpdate):
     conn = connect_db()
     if not conn:
@@ -109,7 +233,6 @@ def update_aluno_id(aluno: AlunoUpdate):
 
     try:
         cur = conn.cursor()
-
         query = """
             UPDATE aluno 
             SET nome = %s, endereco = %s, matricula = %s, 
@@ -133,25 +256,15 @@ def update_aluno_id(aluno: AlunoUpdate):
         )
 
         cur.execute(query, tuple(values))
-        aluno_atualizado = cur.fetchone()
-
+        atualizado = cur.fetchone()
         conn.commit()
-        if aluno_atualizado:
-            return {
-                "id": aluno_atualizado[0],
-                "nome": aluno_atualizado[1],
-                "endereco": aluno_atualizado[2],
-                "matricula": aluno_atualizado[3],
-                "data_nascimento": aluno_atualizado[4],
-                "serie_atual": aluno_atualizado[5],
-                "responsavel_id": aluno_atualizado[6],
-                "termo_medicamento_escola": aluno_atualizado[7],
-                "termo_atendimento_medico": aluno_atualizado[8],
-                "termo_compartilhamento_dados": aluno_atualizado[9]
-            }
-        else:
-            raise HTTPException(status_code=404, detail="Aluno não encontrado")
+        if atualizado:
+            return {"message": "Aluno atualizado com sucesso!", "id": atualizado[0]}
+        raise HTTPException(status_code=404, detail="Aluno não encontrado")
 
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erro ao atualizar aluno: {e}")
@@ -159,10 +272,6 @@ def update_aluno_id(aluno: AlunoUpdate):
         cur.close()
         conn.close()
 
-"""
-Função para deletar o registro do aluno
-@JvReis
-"""
 def delete_aluno_id(aluno_id: int):
     conn = connect_db()
     if not conn:
@@ -171,14 +280,16 @@ def delete_aluno_id(aluno_id: int):
     try:
         cur = conn.cursor()
         cur.execute("DELETE FROM aluno WHERE id = %s RETURNING id;", (aluno_id,))
-        aluno_deletado = cur.fetchone()
+        deletado = cur.fetchone()
         conn.commit()
 
-        if aluno_deletado:
+        if deletado:
             return {"message": "Aluno removido com sucesso"}
-        else:
-            raise HTTPException(status_code=404, detail="Aluno não encontrado")
+        raise HTTPException(status_code=404, detail="Aluno não encontrado")
 
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=f"Erro ao excluir aluno: {e}")

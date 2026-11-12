@@ -1,4 +1,4 @@
-// File: /Users/amanda/ESII-Plataforma-de-Saude-Escolar/app/register/page.tsx
+// File: C:\Users\Francisco\Documents\estigma\workspace\SEG-saude-escolar\app\register\page.tsx
 import * as entry from '../../../../app/register/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 
